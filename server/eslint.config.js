@@ -7,7 +7,9 @@ import prettier from "eslint-config-prettier";
 let tsPlugin;
 try {
   tsPlugin = await import("@typescript-eslint/eslint-plugin");
-} catch {}
+} catch {
+  // The TypeScript plugin is optional; fall back to JS-only rules.
+}
 
 const baseConfig = [
   js.configs.recommended,

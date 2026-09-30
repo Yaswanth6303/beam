@@ -43,7 +43,7 @@ export function JoinMeetingDialog({ trigger }: { trigger: ReactNode }) {
             <Label htmlFor="room-code">Meeting code</Label>
             <Input
               id="room-code"
-              placeholder="e.g. beam-4821"
+              placeholder="e.g. beam-k3xq-7mfa-p2wd"
               value={code}
               onChange={(e) => setCode(e.target.value)}
               autoFocus

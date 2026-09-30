@@ -1,54 +1,66 @@
 import type { Request, Response } from "express";
 import type { Types } from "mongoose";
 import { User } from "../models/user.model.js";
-import type { IUser } from "../models/user.model.js";
 import bcrypt from "bcrypt";
-import jwt from "jsonwebtoken";
 import { Meeting } from "../models/meeting.model.js";
-import { JWT_SECRET } from "../middlewares/auth.middleware.js";
+import { signToken } from "../middlewares/auth.middleware.js";
 import type { AuthedRequest } from "../middlewares/auth.middleware.js";
 
 const MIN_PASSWORD_LENGTH = 6;
+// bcrypt ignores everything past 72 bytes, so longer passwords give a false sense of strength.
+const MAX_PASSWORD_LENGTH = 72;
+const MAX_NAME_LENGTH = 80;
+const MAX_USERNAME_LENGTH = 254;
+const MAX_MEETING_CODE_LENGTH = 64;
+const MAX_TITLE_LENGTH = 120;
 
-/** Issues a 7 day token and stores it on the user, matching the login flow. */
-const issueToken = async (user: IUser): Promise<string> => {
-    const token = jwt.sign(
-        { id: user._id, username: user.username },
-        JWT_SECRET,
-        { expiresIn: "7d" }
-    );
-    user.token = token;
-    await user.save();
-    return token;
+// Compared against when the username is unknown, so a miss costs the same
+// bcrypt time as a wrong password and response timing does not reveal accounts.
+const DUMMY_HASH = bcrypt.hashSync("dummy-password", 10);
+
+// Usernames are emails, which are case-insensitive in practice. New accounts are
+// stored lowercased; lookups ignore case so accounts created before that rule
+// (possibly mixed-case) can still sign in.
+const CASE_INSENSITIVE = { locale: "en", strength: 2 } as const;
+const normalizeUsername = (username: string): string => username.trim().toLowerCase();
+
+const isNonEmptyString = (value: unknown, maxLength: number): value is string =>
+    typeof value === "string" && value.trim().length > 0 && value.length <= maxLength;
+
+const passwordProblem = (password: string): string | null => {
+    if (password.length < MIN_PASSWORD_LENGTH) {
+        return `Password must be at least ${MIN_PASSWORD_LENGTH} characters`;
+    }
+    if (Buffer.byteLength(password) > MAX_PASSWORD_LENGTH) {
+        return `Password must be at most ${MAX_PASSWORD_LENGTH} bytes`;
+    }
+    return null;
 };
 
 export const login = async (req: Request, res: Response): Promise<void> => {
     const { username, password } = req.body;
 
-    if (!username || !password) {
+    // Rejecting non-strings also blocks query operators such as {"$ne": null}.
+    if (typeof username !== "string" || typeof password !== "string" || !username || !password) {
         res.status(400).json({ message: "Please provide username and password" });
         return;
     }
 
     try {
-        const user = await User.findOne({ username });
-        if (!user) {
-            res.status(404).json({ message: "User not found" });
+        const user = await User.findOne({ username: normalizeUsername(username) })
+            .collation(CASE_INSENSITIVE);
+        const isPasswordCorrect = await bcrypt.compare(
+            password,
+            (user?.password as string | undefined) ?? DUMMY_HASH
+        );
+
+        if (!user || !isPasswordCorrect) {
+            res.status(401).json({ message: "Invalid username or password" });
             return;
         }
 
-        const isPasswordCorrect = await bcrypt.compare(password, user.password as string);
-
-        if (isPasswordCorrect) {
-            const token = jwt.sign({ id: user._id, username: user.username }, JWT_SECRET, { expiresIn: "7d" });
-            
-            user.token = token;
-            await user.save();
-            
-            res.status(200).json({ token, name: user.name, username: user.username });
-        } else {
-            res.status(401).json({ message: "Invalid username or password" });
-        }
+        const token = signToken(user);
+        res.status(200).json({ token, name: user.name, username: user.username });
     } catch (e) {
         console.error("Login Error:", e);
         res.status(500).json({ message: "Internal server error" });
@@ -58,13 +70,25 @@ export const login = async (req: Request, res: Response): Promise<void> => {
 export const register = async (req: Request, res: Response): Promise<void> => {
     const { name, username, password } = req.body;
 
-    if (!name || !username || !password) {
+    if (
+        !isNonEmptyString(name, MAX_NAME_LENGTH) ||
+        !isNonEmptyString(username, MAX_USERNAME_LENGTH) ||
+        typeof password !== "string"
+    ) {
         res.status(400).json({ message: "Please provide name, username and password" });
         return;
     }
 
+    const problem = passwordProblem(password);
+    if (problem) {
+        res.status(400).json({ message: problem });
+        return;
+    }
+
     try {
-        const existingUser = await User.findOne({ username });
+        const normalized = normalizeUsername(username);
+        const existingUser = await User.findOne({ username: normalized })
+            .collation(CASE_INSENSITIVE);
         if (existingUser) {
             res.status(409).json({ message: "User already exists" });
             return;
@@ -73,8 +97,8 @@ export const register = async (req: Request, res: Response): Promise<void> => {
         const hashedPassword = await bcrypt.hash(password, 10);
 
         const newUser = new User({
-            name,
-            username,
+            name: name.trim(),
+            username: normalized,
             password: hashedPassword
         });
 
@@ -87,55 +111,48 @@ export const register = async (req: Request, res: Response): Promise<void> => {
 };
 
 export const getUserHistory = async (req: Request, res: Response): Promise<void> => {
-    const { token } = req.query;
-
-    if (!token || typeof token !== "string") {
-        res.status(401).json({ message: "Unauthorized: Missing token" });
-        return;
-    }
+    const { username } = (req as AuthedRequest).user;
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as { id: string; username: string };
-        const meetings = await Meeting.find({ user_id: decoded.username, deleted: { $ne: true } }).sort({ date: -1 });
+        const meetings = await Meeting.find({ user_id: username, deleted: { $ne: true } }).sort({ date: -1 });
         res.json(meetings);
     } catch (e) {
         console.error("History Error:", e);
-        res.status(401).json({ message: "Unauthorized: Invalid token" });
+        res.status(500).json({ message: "Internal server error" });
     }
 };
 
+/** Records a visit. Rejoining the same room refreshes its row instead of adding another. */
 export const addToHistory = async (req: Request, res: Response): Promise<void> => {
-    const { token, meeting_code, title } = req.body;
+    const { username } = (req as AuthedRequest).user;
+    const { meeting_code, title } = req.body;
 
-    if (!token || typeof token !== "string") {
-        res.status(401).json({ message: "Unauthorized: Missing token" });
+    if (!isNonEmptyString(meeting_code, MAX_MEETING_CODE_LENGTH)) {
+        res.status(400).json({ message: "Please provide meeting_code" });
+        return;
+    }
+
+    if (title !== undefined && !isNonEmptyString(title, MAX_TITLE_LENGTH)) {
+        res.status(400).json({ message: `Title must be at most ${MAX_TITLE_LENGTH} characters` });
         return;
     }
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as { id: string; username: string };
-
-        const newMeeting = new Meeting({
-            user_id: decoded.username,
-            meetingCode: meeting_code,
-            ...(title ? { title } : {})
-        });
-
-        await newMeeting.save();
+        await Meeting.updateOne(
+            { user_id: username, meetingCode: meeting_code },
+            { $set: { date: new Date(), deleted: false, ...(title ? { title } : {}) } },
+            { upsert: true }
+        );
         res.status(201).json({ message: "Added code to history" });
     } catch (e) {
         console.error("Add History Error:", e);
-        res.status(401).json({ message: "Unauthorized: Invalid token" });
+        res.status(500).json({ message: "Internal server error" });
     }
 };
 
 export const deleteFromHistory = async (req: Request, res: Response): Promise<void> => {
-    const { token, meeting_code } = req.query;
-
-    if (!token || typeof token !== "string") {
-        res.status(401).json({ message: "Unauthorized: Missing token" });
-        return;
-    }
+    const { username } = (req as AuthedRequest).user;
+    const { meeting_code } = req.query;
 
     if (!meeting_code || typeof meeting_code !== "string") {
         res.status(400).json({ message: "Please provide meeting_code" });
@@ -143,40 +160,31 @@ export const deleteFromHistory = async (req: Request, res: Response): Promise<vo
     }
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as { id: string; username: string };
-
         await Meeting.updateMany(
-            { user_id: decoded.username, meetingCode: meeting_code },
+            { user_id: username, meetingCode: meeting_code },
             { $set: { deleted: true } }
         );
 
         res.status(200).json({ message: "Deleted from history" });
     } catch (e) {
         console.error("Delete History Error:", e);
-        res.status(401).json({ message: "Unauthorized: Invalid token" });
+        res.status(500).json({ message: "Internal server error" });
     }
 };
 
 export const clearHistory = async (req: Request, res: Response): Promise<void> => {
-    const { token } = req.query;
-
-    if (!token || typeof token !== "string") {
-        res.status(401).json({ message: "Unauthorized: Missing token" });
-        return;
-    }
+    const { username } = (req as AuthedRequest).user;
 
     try {
-        const decoded = jwt.verify(token, JWT_SECRET) as { id: string; username: string };
-
         await Meeting.updateMany(
-            { user_id: decoded.username },
+            { user_id: username },
             { $set: { deleted: true } }
         );
 
         res.status(200).json({ message: "Cleared history" });
     } catch (e) {
         console.error("Clear History Error:", e);
-        res.status(401).json({ message: "Unauthorized: Invalid token" });
+        res.status(500).json({ message: "Internal server error" });
     }
 };
 
@@ -192,7 +200,8 @@ export const getProfile = async (req: Request, res: Response): Promise<void> => 
             return;
         }
 
-        const meetingCount = await Meeting.countDocuments({ user_id: username });
+        // Matches what the dashboard lists, so deleted rows are not counted.
+        const meetingCount = await Meeting.countDocuments({ user_id: username, deleted: { $ne: true } });
 
         res.json({
             name: user.name,
@@ -213,8 +222,8 @@ export const updateProfile = async (req: Request, res: Response): Promise<void> 
     const { username } = (req as AuthedRequest).user;
     const { name } = req.body;
 
-    if (typeof name !== "string" || !name.trim()) {
-        res.status(400).json({ message: "Please provide a name" });
+    if (!isNonEmptyString(name, MAX_NAME_LENGTH)) {
+        res.status(400).json({ message: `Please provide a name of at most ${MAX_NAME_LENGTH} characters` });
         return;
     }
 
@@ -240,17 +249,16 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
     const { username } = (req as AuthedRequest).user;
     const { currentPassword, newPassword } = req.body;
 
-    if (!currentPassword || !newPassword) {
+    if (typeof currentPassword !== "string" || typeof newPassword !== "string" || !currentPassword) {
         res.status(400).json({
             message: "Please provide your current and new password"
         });
         return;
     }
 
-    if (String(newPassword).length < MIN_PASSWORD_LENGTH) {
-        res.status(400).json({
-            message: `New password must be at least ${MIN_PASSWORD_LENGTH} characters`
-        });
+    const problem = passwordProblem(newPassword);
+    if (problem) {
+        res.status(400).json({ message: problem });
         return;
     }
 
@@ -266,17 +274,19 @@ export const changePassword = async (req: Request, res: Response): Promise<void>
             user.password as string
         );
         if (!isCurrentCorrect) {
-            res.status(401).json({ message: "Current password is incorrect" });
+            // 400, not 401: the session is valid, only the input is wrong, and
+            // the client treats 401 as "signed out".
+            res.status(400).json({ message: "Current password is incorrect" });
             return;
         }
 
         user.password = await bcrypt.hash(newPassword, 10);
+        // Invalidates every token issued before now, on every device.
+        user.tokenVersion = (user.tokenVersion ?? 0) + 1;
+        await user.save();
 
-        // Replaces the stored token so the caller's session stays valid while
-        // any token issued before the change stops matching what we hold.
-        const token = await issueToken(user);
-
-        res.json({ message: "Password updated", token });
+        // The caller gets a fresh token so this device stays signed in.
+        res.json({ message: "Password updated", token: signToken(user) });
     } catch (e) {
         console.error("Change Password Error:", e);
         res.status(500).json({ message: "Internal server error" });

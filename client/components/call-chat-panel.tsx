@@ -119,6 +119,8 @@ export function CallChatPanel({
           onChange={(e) => setDraft(e.target.value)}
           placeholder="Send a message"
           aria-label="Message"
+          // The server drops anything longer.
+          maxLength={2000}
           className="h-9 rounded-full px-3.5"
         />
         <Button

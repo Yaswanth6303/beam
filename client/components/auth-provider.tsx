@@ -78,6 +78,18 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     router.push("/")
   }, [router])
 
+  // A 401 on any authenticated call means the stored token is dead (expired,
+  // or revoked by a password change on another device), so drop it and send
+  // the user to sign in rather than leaving every page showing an error.
+  useEffect(() => {
+    api.setUnauthorizedHandler(() => {
+      window.localStorage.removeItem(STORAGE_KEY)
+      setSession(null)
+      router.replace("/signin")
+    })
+    return () => api.setUnauthorizedHandler(null)
+  }, [router])
+
   const updateSession = useCallback((patch: Partial<Session>) => {
     setSession((current) => {
       if (!current) return current

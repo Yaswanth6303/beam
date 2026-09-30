@@ -18,6 +18,11 @@ const meetingSchema = new Schema<IMeeting>(
     }
 );
 
+// One row per user per room; addToHistory upserts against this.
+// Run scripts/dedupe-meetings.ts once on older databases before deploying,
+// or the index build fails on existing duplicates.
+meetingSchema.index({ user_id: 1, meetingCode: 1 }, { unique: true });
+
 const Meeting = mongoose.model<IMeeting>("Meeting", meetingSchema);
 
 export { Meeting };

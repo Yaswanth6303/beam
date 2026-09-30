@@ -35,7 +35,7 @@ const features = [
     icon: ShieldCheck,
     title: "Private by default",
     description:
-      "End-to-end encrypted rooms so your conversations stay yours.",
+      "Only signed-in people with your meeting code can join, and media is encrypted in transit.",
   },
 ]
 

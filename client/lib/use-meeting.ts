@@ -7,17 +7,33 @@ import { API_URL } from "@/lib/api"
 import { readPreferences } from "@/lib/preferences"
 import type { ChatMessage, Participant } from "@/lib/types"
 
+const TURN_URLS = process.env.NEXT_PUBLIC_TURN_URLS
+
+/** STUN finds a direct route; TURN relays media when there is none (strict
+ *  NATs, corporate firewalls, some mobile carriers). Without TURN those users
+ *  join the call but never see or hear anyone. */
 const PEER_CONFIG: RTCConfiguration = {
-  iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+  iceServers: [
+    { urls: "stun:stun.l.google.com:19302" },
+    ...(TURN_URLS
+      ? [
+          {
+            urls: TURN_URLS.split(",").map((url) => url.trim()),
+            username: process.env.NEXT_PUBLIC_TURN_USERNAME,
+            credential: process.env.NEXT_PUBLIC_TURN_CREDENTIAL,
+          },
+        ]
+      : []),
+  ],
 }
 
 /** Payloads relayed verbatim by the server's `signal` handler (socketManager.ts).
- *  The server never inspects them, so we piggyback presence on the same channel:
- *  the REST API models no display names or mute state for peers. */
+ *  The server never inspects them, so we piggyback mute state on the same
+ *  channel. Display names are not sent this way: the server attaches the
+ *  verified account name to `user-joined`, so peers cannot spoof them. */
 type SignalPayload =
   | { sdp: RTCSessionDescriptionInit }
   | { ice: RTCIceCandidateInit }
-  | { name: string }
   | { state: { muted: boolean; videoOn: boolean } }
 
 type PeerState = {
@@ -36,7 +52,8 @@ function nowLabel() {
 }
 
 /** A silent audio track, used so a peer always has an audio sender to
- *  replaceTrack on even when the mic was never granted. */
+ *  replaceTrack on even when the mic was never granted. `close` releases the
+ *  AudioContext behind it; browsers cap how many can be open at once. */
 function silentTrack() {
   const ctx = new AudioContext()
   const destination = ctx.createMediaStreamDestination()
@@ -45,7 +62,7 @@ function silentTrack() {
   oscillator.start()
   const track = destination.stream.getAudioTracks()[0]
   track.enabled = false
-  return track
+  return { track, close: () => void ctx.close() }
 }
 
 /** A 2x2 black video track, same idea as `silentTrack` for the camera. */
@@ -106,14 +123,18 @@ function watchSpeaking(stream: MediaStream, onChange: (speaking: boolean) => voi
 export function useMeeting({
   roomCode,
   displayName,
+  token,
 }: {
   roomCode: string
   displayName: string
+  /** The session JWT; the signalling server refuses unauthenticated sockets. */
+  token: string
 }) {
   const [localStream, setLocalStream] = useState<MediaStream | null>(null)
   const [peers, setPeers] = useState<Record<string, PeerState>>({})
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [connected, setConnected] = useState(false)
+  const [connectionError, setConnectionError] = useState<string | null>(null)
   const [mediaError, setMediaError] = useState<string | null>(null)
   const [micOn, setMicOn] = useState(true)
   const [videoOn, setVideoOn] = useState(true)
@@ -126,11 +147,12 @@ export function useMeeting({
   const localStreamRef = useRef<MediaStream | null>(null)
   const cameraTrackRef = useRef<MediaStreamTrack | null>(null)
   const speakingCleanupRef = useRef<Record<string, () => void>>({})
-  // Read inside socket callbacks that are registered once, so keep them in refs.
-  const displayNameRef = useRef(displayName)
+  /** Per-peer promise chain. Each signal waits for the previous one from the
+   *  same peer, so an ICE candidate is never applied while the offer it
+   *  belongs to is still being set (addIceCandidate would throw). */
+  const signalQueueRef = useRef<Record<string, Promise<void>>>({})
+  // Read inside socket callbacks that are registered once, so keep it in a ref.
   const stateRef = useRef({ muted: false, videoOn: true })
-
-  displayNameRef.current = displayName
 
   const emitSignal = useCallback((toId: string, payload: SignalPayload) => {
     socketRef.current?.emit("signal", toId, JSON.stringify(payload))
@@ -199,8 +221,7 @@ export function useMeeting({
             }
       )
 
-      // Introduce ourselves; the server relays this untouched.
-      emitSignal(peerId, { name: displayNameRef.current })
+      // Share our mute/camera state; the server relays this untouched.
       emitSignal(peerId, { state: stateRef.current })
 
       return pc
@@ -213,6 +234,7 @@ export function useMeeting({
     delete connectionsRef.current[peerId]
     speakingCleanupRef.current[peerId]?.()
     delete speakingCleanupRef.current[peerId]
+    delete signalQueueRef.current[peerId]
     setPeers((prev) => {
       const { [peerId]: _removed, ...rest } = prev
       return rest
@@ -222,6 +244,8 @@ export function useMeeting({
   // ---- Local media -------------------------------------------------------
   useEffect(() => {
     let cancelled = false
+    // AudioContexts opened for this stream, closed when the hook unmounts.
+    const cleanups: (() => void)[] = []
 
     async function start() {
       let stream: MediaStream
@@ -238,7 +262,9 @@ export function useMeeting({
         // placeholder tracks rather than dropping the user out of the call.
         if (cancelled) return
         setMediaError("Camera and microphone unavailable — joining muted.")
-        stream = new MediaStream([blackTrack(), silentTrack()])
+        const silent = silentTrack()
+        cleanups.push(silent.close)
+        stream = new MediaStream([blackTrack(), silent.track])
         setMicOn(false)
         setVideoOn(false)
         stateRef.current = { muted: true, videoOn: false }
@@ -246,6 +272,7 @@ export function useMeeting({
 
       if (cancelled) {
         for (const track of stream.getTracks()) track.stop()
+        for (const cleanup of cleanups) cleanup()
         return
       }
 
@@ -267,7 +294,7 @@ export function useMeeting({
       localStreamRef.current = stream
       cameraTrackRef.current = stream.getVideoTracks()[0] ?? null
       setLocalStream(stream)
-      watchSpeaking(stream, setSelfSpeaking)
+      cleanups.push(watchSpeaking(stream, setSelfSpeaking))
     }
 
     void start()
@@ -276,6 +303,7 @@ export function useMeeting({
       cancelled = true
       for (const track of localStreamRef.current?.getTracks() ?? []) track.stop()
       localStreamRef.current = null
+      for (const cleanup of cleanups) cleanup()
     }
   }, [])
 
@@ -283,43 +311,65 @@ export function useMeeting({
   useEffect(() => {
     if (!localStream) return
 
-    const socket = io(API_URL, { transports: ["websocket", "polling"] })
+    const socket = io(API_URL, {
+      transports: ["websocket", "polling"],
+      auth: { token },
+    })
     socketRef.current = socket
 
     socket.on("connect", () => {
       selfIdRef.current = socket.id ?? ""
       setConnected(true)
+      setConnectionError(null)
       // The server treats the argument as an opaque room key.
       socket.emit("join-call", roomCode)
     })
 
+    socket.on("connect_error", (error) => {
+      // An auth rejection will not fix itself on retry, so stop and say so.
+      if (error.message === "Unauthorized") {
+        socket.disconnect()
+        setConnectionError("Your session has expired. Sign in again to join.")
+      }
+    })
+
     socket.on("disconnect", () => setConnected(false))
 
-    socket.on("user-joined", (joinedId: string, clients: string[]) => {
-      const selfId = selfIdRef.current
-      const iAmTheNewcomer = joinedId === selfId
+    /** Runs `task` after every earlier signal task for the same peer. */
+    const enqueue = (peerId: string, task: () => Promise<void>) => {
+      const previous = signalQueueRef.current[peerId] ?? Promise.resolve()
+      signalQueueRef.current[peerId] = previous.then(task).catch((error) => {
+        console.error("Signal handling failed", error)
+      })
+    }
 
-      for (const peerId of clients) {
-        if (peerId === selfId) continue
-        const isNew = !connectionsRef.current[peerId]
-        const pc = ensureConnection(peerId)
+    socket.on(
+      "user-joined",
+      (joinedId: string, clients: string[], names: Record<string, string>) => {
+        const selfId = selfIdRef.current
+        const iAmTheNewcomer = joinedId === selfId
 
-        // The server broadcasts `user-joined` to the whole room, so both sides
-        // would offer at once. Only peers already present offer to the newcomer;
-        // the newcomer waits for those offers. That avoids SDP glare.
-        if (!iAmTheNewcomer && peerId === joinedId && isNew) {
-          void (async () => {
-            try {
+        for (const peerId of clients) {
+          if (peerId === selfId) continue
+          const isNew = !connectionsRef.current[peerId]
+          const pc = ensureConnection(peerId)
+          // Names come from the server's verified account, not from peers.
+          const name = names[peerId]
+          if (name) patchPeer(peerId, { name })
+
+          // The server broadcasts `user-joined` to the whole room, so both sides
+          // would offer at once. Only peers already present offer to the newcomer;
+          // the newcomer waits for those offers. That avoids SDP glare.
+          if (!iAmTheNewcomer && peerId === joinedId && isNew) {
+            enqueue(peerId, async () => {
               const offer = await pc.createOffer()
               await pc.setLocalDescription(offer)
               emitSignal(peerId, { sdp: pc.localDescription!.toJSON() })
-            } catch (error) {
-              console.error("Failed to create offer", error)
-            }
-          })()
+            })
+          }
         }
       }
-    })
+    )
 
     socket.on("signal", (fromId: string, raw: string) => {
       if (fromId === selfIdRef.current) return
@@ -328,12 +378,6 @@ export function useMeeting({
       try {
         payload = JSON.parse(raw)
       } catch {
-        return
-      }
-
-      if ("name" in payload) {
-        ensureConnection(fromId)
-        patchPeer(fromId, { name: payload.name })
         return
       }
 
@@ -348,22 +392,18 @@ export function useMeeting({
 
       const pc = ensureConnection(fromId)
 
-      void (async () => {
-        try {
-          if ("sdp" in payload) {
-            await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp))
-            if (payload.sdp.type === "offer") {
-              const answer = await pc.createAnswer()
-              await pc.setLocalDescription(answer)
-              emitSignal(fromId, { sdp: pc.localDescription!.toJSON() })
-            }
-          } else if ("ice" in payload) {
-            await pc.addIceCandidate(new RTCIceCandidate(payload.ice))
+      enqueue(fromId, async () => {
+        if ("sdp" in payload) {
+          await pc.setRemoteDescription(new RTCSessionDescription(payload.sdp))
+          if (payload.sdp.type === "offer") {
+            const answer = await pc.createAnswer()
+            await pc.setLocalDescription(answer)
+            emitSignal(fromId, { sdp: pc.localDescription!.toJSON() })
           }
-        } catch (error) {
-          console.error("Signal handling failed", error)
+        } else if ("ice" in payload) {
+          await pc.addIceCandidate(new RTCIceCandidate(payload.ice))
         }
-      })()
+      })
     })
 
     socket.on("user-left", (id: string) => closeConnection(id))
@@ -391,7 +431,7 @@ export function useMeeting({
       socketRef.current = null
       setConnected(false)
     }
-  }, [localStream, roomCode, ensureConnection, closeConnection, emitSignal, patchPeer])
+  }, [localStream, roomCode, token, ensureConnection, closeConnection, emitSignal, patchPeer])
 
   // ---- Controls ----------------------------------------------------------
   const toggleMic = useCallback(() => {
@@ -474,9 +514,9 @@ export function useMeeting({
   }, [sharing, startSharing, stopSharing])
 
   const sendMessage = useCallback((text: string) => {
-    // The server echoes this back to everyone including us, so do not append
-    // locally — the `chat-message` listener adds it once.
-    socketRef.current?.emit("chat-message", text, displayNameRef.current)
+    // The server stamps our verified name and echoes this back to everyone
+    // including us, so do not append locally — the listener adds it once.
+    socketRef.current?.emit("chat-message", text)
   }, [])
 
   const leave = useCallback(() => {
@@ -512,6 +552,7 @@ export function useMeeting({
     participants,
     messages,
     connected,
+    connectionError,
     mediaError,
     micOn,
     videoOn,

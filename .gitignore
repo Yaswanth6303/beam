@@ -1,0 +1,4 @@
+# Local agent/plugin state
+.claude-flow/
+.swarm/
+ruvector.db

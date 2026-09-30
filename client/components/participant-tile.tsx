@@ -35,7 +35,7 @@ export function ParticipantTile({
     if (!element) return
     const stream = participant.stream ?? null
     if (element.srcObject !== stream) element.srcObject = stream
-  }, [participant.stream, showVideo])
+  }, [participant.stream])
 
   return (
     <div
@@ -48,23 +48,28 @@ export function ParticipantTile({
         className
       )}
     >
+      {/* The <video> also plays the peer's audio, so it stays mounted while
+          there is a stream and is only hidden when their camera is off —
+          unmounting it would silence them too. */}
+      {participant.stream && (
+        <video
+          ref={videoRef}
+          autoPlay
+          playsInline
+          // Never play our own audio back — it would echo.
+          muted={participant.isSelf}
+          className={cn(
+            "size-full object-cover",
+            !showVideo && "hidden",
+            // Mirror our own camera the way every call app does. A shared
+            // screen goes through the same tile and must not be flipped.
+            participant.isSelf && "-scale-x-100"
+          )}
+        />
+      )}
+
       {showVideo ? (
-        <>
-          <video
-            ref={videoRef}
-            autoPlay
-            playsInline
-            // Never play our own audio back — it would echo.
-            muted={participant.isSelf}
-            className={cn(
-              "size-full object-cover",
-              // Mirror our own camera the way every call app does. A shared
-              // screen goes through the same tile and must not be flipped.
-              participant.isSelf && "-scale-x-100"
-            )}
-          />
-          <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/60 to-transparent" />
-        </>
+        <div className="pointer-events-none absolute inset-x-0 bottom-0 h-1/3 bg-gradient-to-t from-black/60 to-transparent" />
       ) : (
         <div className="flex size-full items-center justify-center">
           <Avatar size="lg" className="size-14 md:size-16">

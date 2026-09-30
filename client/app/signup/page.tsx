@@ -63,6 +63,7 @@ export default function SignUpPage() {
             type="text"
             placeholder="Ava Mitchell"
             autoComplete="name"
+            maxLength={80}
             required
           />
         </div>
@@ -83,8 +84,9 @@ export default function SignUpPage() {
             id="password"
             name="password"
             type="password"
-            placeholder="Create a password"
+            placeholder="At least 6 characters"
             autoComplete="new-password"
+            minLength={6}
             required
           />
         </div>

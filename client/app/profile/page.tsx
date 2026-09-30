@@ -109,6 +109,7 @@ function ProfileContent() {
                 value={name}
                 onChange={(e) => setName(e.target.value)}
                 placeholder="Your name"
+                maxLength={80}
                 required
               />
             </div>

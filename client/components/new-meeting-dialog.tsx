@@ -54,6 +54,7 @@ export function NewMeetingDialog({ trigger }: { trigger: ReactNode }) {
             <Input
               id="meeting-title"
               placeholder="e.g. Product Sync"
+              maxLength={120}
               value={title}
               onChange={(e) => setTitle(e.target.value)}
               autoFocus

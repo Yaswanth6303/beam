@@ -5,7 +5,13 @@ export function cn(...inputs: ClassValue[]) {
   return twMerge(clsx(inputs))
 }
 
-/** Room codes are opaque keys to the signalling server; any unique string works. */
+// No 0/o/1/l, so codes survive being read aloud or retyped.
+const CODE_ALPHABET = "abcdefghijkmnpqrstuvwxyz23456789"
+
+/** Room codes are the only thing standing between a meeting and a stranger,
+ *  so they come from a CSPRNG with ~60 bits of entropy (e.g. beam-k3xq-7mfa-p2wd). */
 export function newRoomCode() {
-  return `beam-${Math.floor(1000 + Math.random() * 9000)}`
+  const bytes = crypto.getRandomValues(new Uint8Array(12))
+  const chars = Array.from(bytes, (b) => CODE_ALPHABET[b % CODE_ALPHABET.length])
+  return `beam-${chars.slice(0, 4).join("")}-${chars.slice(4, 8).join("")}-${chars.slice(8).join("")}`
 }

@@ -66,16 +66,29 @@ export function login(username: string, password: string) {
   })
 }
 
-/** GET /get_all_activity — the backend reads the token from the query string. */
-export function getHistory(token: string) {
-  return request<MeetingRecord[]>(
-    `${USERS_URL}/get_all_activity?token=${encodeURIComponent(token)}`
-  )
+let unauthorizedHandler: (() => void) | null = null
+
+/** Called when an authenticated request comes back 401 — the token expired or
+ *  was revoked by a password change elsewhere. AuthProvider signs out. */
+export function setUnauthorizedHandler(handler: (() => void) | null) {
+  unauthorizedHandler = handler
 }
 
-/** Newer routes authenticate with a bearer header instead of a token field. */
-function authHeaders(token: string) {
-  return { "Content-Type": "application/json", Authorization: `Bearer ${token}` }
+/** Authenticated routes take the token as a bearer header, never in the URL,
+ *  so it stays out of server logs and browser history. */
+async function authedRequest<T>(url: string, token: string, init: RequestInit = {}) {
+  try {
+    return await request<T>(url, {
+      ...init,
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${token}`,
+      },
+    })
+  } catch (error) {
+    if (error instanceof ApiError && error.status === 401) unauthorizedHandler?.()
+    throw error
+  }
 }
 
 export type Profile = {
@@ -87,18 +100,16 @@ export type Profile = {
 
 /** GET /profile */
 export function getProfile(token: string) {
-  return request<Profile>(`${USERS_URL}/profile`, {
-    headers: { Authorization: `Bearer ${token}` },
-  })
+  return authedRequest<Profile>(`${USERS_URL}/profile`, token)
 }
 
 /** PATCH /profile — the display name is the only editable field. */
 export function updateProfile(token: string, name: string) {
-  return request<{ name: string; username: string }>(`${USERS_URL}/profile`, {
-    method: "PATCH",
-    headers: authHeaders(token),
-    body: JSON.stringify({ name }),
-  })
+  return authedRequest<{ name: string; username: string }>(
+    `${USERS_URL}/profile`,
+    token,
+    { method: "PATCH", body: JSON.stringify({ name }) }
+  )
 }
 
 /** POST /change_password — returns a freshly issued token on success. */
@@ -107,14 +118,16 @@ export function changePassword(
   currentPassword: string,
   newPassword: string
 ) {
-  return request<{ message: string; token: string }>(
+  return authedRequest<{ message: string; token: string }>(
     `${USERS_URL}/change_password`,
-    {
-      method: "POST",
-      headers: authHeaders(token),
-      body: JSON.stringify({ currentPassword, newPassword }),
-    }
+    token,
+    { method: "POST", body: JSON.stringify({ currentPassword, newPassword }) }
   )
+}
+
+/** GET /get_all_activity */
+export function getHistory(token: string) {
+  return authedRequest<MeetingRecord[]>(`${USERS_URL}/get_all_activity`, token)
 }
 
 /** POST /add_to_activity — records that this user joined `meetingCode`. */
@@ -123,32 +136,24 @@ export function addToHistory(
   meetingCode: string,
   title?: string
 ) {
-  return request<{ message: string }>(`${USERS_URL}/add_to_activity`, {
+  return authedRequest<{ message: string }>(`${USERS_URL}/add_to_activity`, token, {
     method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token, meeting_code: meetingCode, title }),
+    body: JSON.stringify({ meeting_code: meetingCode, title }),
   })
 }
 
 /** DELETE /delete_from_activity — removes a meeting code from history. */
 export function deleteHistory(token: string, meetingCode: string) {
-  return request<{ message: string }>(
-    `${USERS_URL}/delete_from_activity?token=${encodeURIComponent(
-      token
-    )}&meeting_code=${encodeURIComponent(meetingCode)}`,
-    {
-      method: "DELETE",
-    }
+  return authedRequest<{ message: string }>(
+    `${USERS_URL}/delete_from_activity?meeting_code=${encodeURIComponent(meetingCode)}`,
+    token,
+    { method: "DELETE" }
   )
 }
 
 /** DELETE /clear_activity — removes all meetings from history. */
 export function clearHistory(token: string) {
-  return request<{ message: string }>(
-    `${USERS_URL}/clear_activity?token=${encodeURIComponent(token)}`,
-    {
-      method: "DELETE",
-    }
-  )
+  return authedRequest<{ message: string }>(`${USERS_URL}/clear_activity`, token, {
+    method: "DELETE",
+  })
 }
-

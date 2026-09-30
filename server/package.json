@@ -2,7 +2,7 @@
   "name": "backend",
   "version": "1.0.0",
   "description": "",
-  "main": "index.js",
+  "main": "src/app.ts",
   "type": "module",
   "scripts": {
     "dev": "bun --watch src/app.ts",
@@ -11,37 +11,37 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "lint:json": "eslint . --format json",
-    "format": "prettier --write ."
+    "format": "prettier --write .",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
   },
   "author": "yaswanth",
   "license": "ISC",
   "dependencies": {
     "bcrypt": "^5.1.1",
     "cors": "^2.8.5",
-    "crypto": "^1.0.1",
     "dotenv": "^17.4.2",
     "express": "^4.18.2",
-    "http-status": "^1.7.3",
+    "helmet": "^8.3.0",
     "jsonwebtoken": "^9.0.3",
     "mongoose": "^8.0.3",
-    "nodemon": "^3.0.2",
     "socket.io": "^4.7.3"
   },
   "devDependencies": {
+    "@eslint/js": "^9.33.0",
     "@types/bcrypt": "^6.0.0",
     "@types/cors": "^2.8.19",
-    "@types/express": "^5.0.6",
+    "@types/express": "^4.17.23",
     "@types/jsonwebtoken": "^9.0.10",
     "@types/node": "^26.1.0",
-    "typescript": "^6.0.3",
+    "@typescript-eslint/eslint-plugin": "^8.11.0",
+    "@typescript-eslint/parser": "^8.11.0",
     "eslint": "^9.33.0",
-    "@eslint/js": "^9.33.0",
     "eslint-config-prettier": "^9.1.0",
     "globals": "^15.9.0",
+    "mongodb-memory-server": "9",
     "prettier": "^3.3.3",
-    "@typescript-eslint/parser": "^8.11.0",
-    "@typescript-eslint/eslint-plugin": "^8.11.0"
-  },
-  "module": "src/index.ts"
+    "socket.io-client": "^4.8.4",
+    "typescript": "^6.0.3"
+  }
 }
-

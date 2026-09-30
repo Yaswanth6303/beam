@@ -39,6 +39,7 @@ export function MeetingRoom({
     participants,
     messages,
     connected,
+    connectionError,
     mediaError,
     micOn,
     videoOn,
@@ -48,7 +49,7 @@ export function MeetingRoom({
     toggleSharing,
     sendMessage,
     leave,
-  } = useMeeting({ roomCode, displayName })
+  } = useMeeting({ roomCode, displayName, token: session?.token ?? "" })
 
   const [ended, setEnded] = useState(false)
   const [panel, setPanel] = useState<"chat" | "people">("chat")
@@ -193,7 +194,12 @@ export function MeetingRoom({
       <div className="relative flex min-h-0 flex-1 overflow-hidden">
         <div className="flex min-w-0 flex-1 flex-col gap-3 p-3 md:gap-4 md:p-4">
           <div className="min-h-0 flex-1 overflow-hidden">
-            {!connected ? (
+            {connectionError ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl bg-muted/50 text-sm text-destructive ring-1 ring-foreground/10">
+                <TriangleAlert className="size-5" />
+                {connectionError}
+              </div>
+            ) : !connected ? (
               <div className="flex h-full flex-col items-center justify-center gap-3 rounded-2xl bg-muted/50 text-sm text-muted-foreground ring-1 ring-foreground/10">
                 <Loader2 className="size-5 animate-spin" />
                 Connecting to the meeting…
