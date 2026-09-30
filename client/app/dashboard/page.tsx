@@ -2,7 +2,7 @@
 
 import { useRouter } from "next/navigation"
 import { useEffect, useState } from "react"
-import { Calendar, Clock, Loader2, Plus, TriangleAlert, Video, Trash2 } from "lucide-react"
+import { Clock, Loader2, Plus, TriangleAlert, Video, Trash2 } from "lucide-react"
 import { AppHeader } from "@/components/app-header"
 import { useAuth } from "@/components/auth-provider"
 import { JoinMeetingDialog } from "@/components/join-meeting-dialog"
@@ -115,7 +115,7 @@ function DashboardContent() {
         </section>
 
         {/* Quick actions */}
-        <section className="mb-10 grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        <section className="mb-10 grid gap-4 sm:grid-cols-2">
           <NewMeetingDialog
             trigger={
               <button
@@ -153,18 +153,6 @@ function DashboardContent() {
               </button>
             }
           />
-
-          <div className="group flex flex-col gap-4 rounded-2xl bg-card p-6 ring-1 ring-foreground/10">
-            <span className="flex size-11 items-center justify-center rounded-xl bg-accent text-accent-foreground">
-              <Calendar className="size-5" />
-            </span>
-            <div>
-              <h2 className="font-medium">Schedule</h2>
-              <p className="text-sm text-muted-foreground">
-                Plan a meeting for later
-              </p>
-            </div>
-          </div>
         </section>
 
         {/* History */}

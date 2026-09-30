@@ -84,11 +84,40 @@ CI (`.github/workflows/ci.yml`) runs all of the above on every push and pull req
   cd server && bun scripts/dedupe-meetings.ts
   ```
 
-## Known limits
+## Future improvements
 
-- Mesh calls work well up to about 4–6 people. Larger meetings need a media
-  server (an SFU such as LiveKit or mediasoup).
-- Anyone signed in who has a meeting code can join; there is no host control
-  or waiting room.
-- Sessions are stored in `localStorage`.
-- There is no password reset.
+None of these are needed to run Beam today. Each notes when it becomes worth doing.
+
+### Features
+
+- **Scheduled meetings**: pick a date and time, get a shareable link, and list
+  upcoming meetings on the dashboard.
+- **Password reset**: an emailed, time-limited reset link. Needs an email
+  provider (Resend, Postmark, SES).
+- **Host controls and waiting room**: today anyone signed in who has the
+  meeting code can join. A host could admit people, mute them, or remove them.
+- **Presence status**: the dashboard's "Available" badge is currently static.
+
+### Scaling
+
+- **Larger calls**: every participant sends video to every other participant,
+  which works well up to about 4–6 people. Bigger meetings need a media server
+  (an SFU such as LiveKit or mediasoup) that receives each stream once and
+  forwards it.
+- **More than one server instance**: rooms, chat history, and rate limits live
+  in the server's memory. Running several instances (e.g. pm2 cluster mode)
+  needs Redis, the Socket.IO Redis adapter, and a shared rate-limit store.
+
+### Security
+
+- **httpOnly cookie sessions**: the session token is kept in `localStorage`,
+  where any XSS bug could read it. An httpOnly cookie is out of JavaScript's
+  reach, but needs CSRF protection and a same-site deployment.
+
+### Tooling
+
+- **End-to-end call tests**: automated multi-browser tests (e.g. Playwright
+  with Chrome's fake camera and microphone) that join a call and check that
+  video, audio, mute state, and chat work.
+- **Client linting**: the client's `lint` script needs ESLint and
+  `eslint-config-next` installed.
